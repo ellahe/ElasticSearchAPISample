@@ -1,0 +1,6 @@
+@ElasticSearchAPISample_HostAddress = http://localhost:5231
+
+
+Accept: application/json
+
+###
