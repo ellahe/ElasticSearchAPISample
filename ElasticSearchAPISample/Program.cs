@@ -105,22 +105,50 @@ app.MapPost("/products/bulk", async (IElasticClient es, List<Product> products) 
 app.MapGet("/products/search", async (IElasticClient es, string name, int page = 1, int pageSize = 10, double? maxPrice = null) =>
 {
     // ساخت Query
-    var response = await es.SearchAsync<Product>(s => s
-        .From((page - 1) * pageSize) // صفحه بندی
-        .Size(pageSize)
-        .Query(q => q
-            .Bool(b => b
-                .Must(mu => mu
-                    .Match(m => m.Field(f => f.Name).Query(name)) // Partial/Full Text Search روی Name
-                )
-                .Filter(f => maxPrice.HasValue
-                    ? f.Range(r => r.Field(p => p.Price).LessThanOrEquals(maxPrice.Value))
-                    : null // اگر maxPrice ندادیم، فیلتر حذف می‌شود
-                )
+    var suggestResponse = await es.SearchAsync<Product>(s => s
+        .Suggest(su => su
+            .Completion("name-suggest", c => c
+                .Field(f => f.NameSuggest)
+                .Prefix(name)
+                .Fuzzy(fz => fz.Fuzziness(Fuzziness.Auto))
             )
         )
-        .Sort(s => s.Ascending(p => p.Price)) // مرتب سازی بر اساس قیمت صعودی
     );
+
+    // گرفتن Id های پیشنهادی
+    var suggestedNames = suggestResponse.Suggest["name-suggest"]
+        .SelectMany(s => s.Options)
+        .Select(o => o.Text)
+        .ToList();
+
+    // سپس جستجوی اصلی با Paging + Filter
+    var response = await es.SearchAsync<Product>(s => s
+     .From((page - 1) * pageSize)
+     .Size(pageSize)
+     .Query(q => q
+         .Bool(b =>
+         {
+             // ساخت Should برای هر پیشنهاد
+             foreach (var suggested in suggestedNames)
+             {
+                 b.Should(sh => sh.Match(m => m
+                     .Field(f => f.Name)
+                     .Query(suggested)
+                 ));
+             }
+
+             b.MinimumShouldMatch(1);
+
+             if (maxPrice.HasValue)
+             {
+                 b.Filter(f => f.Range(r => r.Field(p => p.Price).LessThanOrEquals(maxPrice.Value)));
+             }
+
+             return b;
+         })
+     )
+     .Sort(ss => ss.Ascending(p => p.Price))
+ );
 
     return Results.Ok(new
     {
